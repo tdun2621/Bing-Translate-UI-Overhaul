@@ -1,9 +1,11 @@
 // ==UserScript==
-// @name          Bing Translate UI Overhaul
-// @author        tdun2621
-// @description   Enables Alt + Z to copy translated text (plain text), Alt + S to swap languages, Alt + A to swap tone. Defaults to English and French (Canada). Various UI fixes.
-// @match         https://www.bing.com/translator*
-// @icon          https://images.sftcdn.net/images/t_app-icon-s/p/fcf326e2-9524-11e6-9fb1-00163ec9f5fa/3499352888/bing-translator-windows-10-icon.png
+// @name         Bing Translate UI Overhaul (Merged V3)
+// @author       tdun2621 (Modified by AI)
+// @description  Enables Alt + Z to copy translated text (plain text), Alt + S to swap languages, Alt + A to swap tone. Defaults to English and French (Canada). Various UI fixes, including improved handling of emails/websites and line breaks.
+// @match        https://www.bing.com/translator*
+// @icon         https://images.sftcdn.net/images/t_app-icon-s/p/fcf326e2-9524-11e6-9fb1-00163ec9f5fa/3499352888/bing-translator-windows-10-icon.png
+// @grant        none
+// @version      1.3
 // ==/UserScript==
 
 (function() {
@@ -115,9 +117,7 @@
 
     /**
      * Attempts to preserve line breaks in the Bing Translator output by
-     * synchronizing with the input's line structure.
-     * This function is heuristic-based and tries to maintain a visual
-     * correspondence between input and output line breaks.
+     * synchronizing with the input's line structure using anchors.
      */
     function preserveBingLineBreaks() {
         if (!window.location.hostname.includes('bing.com')) return;
@@ -125,109 +125,23 @@
         let lastProcessedInputHTML = '';
         let lastProcessedOutputText = '';
 
-        /**
-         * Core logic for processing and restoring line breaks.
-         * Called periodically and on relevant DOM mutations/events.
-         */
-        function processTranslationLineBreaks() {
-            const inputTextarea = document.querySelector('#tta_input_ta');
-            const outputDiv = document.querySelector('#tta_output_ta');
+        // --- Helper functions for anchor-based splitting ---
+        const urlRegexSimple = /^(https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?$/;
+        const emailRegexSimple = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
-            if (!inputTextarea || !outputDiv) {
-                // If elements are not yet available, retry after a short delay.
-                setTimeout(processTranslationLineBreaks, 500);
-                return;
-            }
-
-            const currentInputHTML = inputTextarea.innerHTML;
-            const currentOutputText = outputDiv.innerText;
-
-            // Only process if content has actually changed to avoid unnecessary work.
-            if (currentInputHTML === lastProcessedInputHTML && currentOutputText === lastProcessedOutputText) {
-                return;
-            }
-
-            lastProcessedInputHTML = currentInputHTML;
-            lastProcessedOutputText = currentOutputText;
-
-            // Normalize input lines: replace <br> with newlines, keep ALL lines (even empty ones).
-            // This ensures that empty lines in the input (which represent double line breaks)
-            // are accurately reflected.
-            const inputLines = inputTextarea.innerHTML
-                                    .replace(/<br\s*\/?>/gi, '\n') // Replace <br> with newlines
-                                    .split('\n'); // Split by newline, preserving empty strings for empty lines
-
-            // If input is entirely empty or just whitespace, clear the output.
-            if (inputLines.every(line => line.trim() === '')) {
-                if (outputDiv.innerText !== '') {
-                    outputDiv.innerText = '';
-                    triggerOutputEvents(outputDiv); // Trigger events to notify Bing of the change
-                }
-                return;
-            }
-
-            // Get translated sentences from the current output. This is a basic sentence tokenizer.
-            const outputSentences = currentOutputText.match(/[^.!?]+(?:[.!?]+|$)/g) || [currentOutputText];
-            // Clean and filter out empty sentences.
-            const cleanedOutputSentences = outputSentences.map(s => s.trim()).filter(s => s.length > 0);
-
-            let restoredOutput = '';
-            let currentOutputSentenceIndex = 0;
-
-            // Iterate through input lines to reconstruct the output with preserved line breaks.
-            for (let i = 0; i < inputLines.length; i++) {
-                const inputLineContent = inputLines[i].trim();
-
-                // If the input line is empty, add appropriate newlines to the output.
-                if (inputLineContent === '') {
-                    // Add a double newline for visual separation, but prevent excessive newlines.
-                    if (restoredOutput.length > 0 && !restoredOutput.endsWith('\n\n')) {
-                        restoredOutput += '\n\n';
-                    } else if (restoredOutput.length === 0 && i > 0) {
-                        // Handle leading empty lines if the very first input line is empty.
-                        restoredOutput += '\n';
-                    }
-                    continue; // Move to the next input line without consuming an output sentence.
-                }
-
-                // Try to find the corresponding output segment. This is the most challenging part,
-                // as Bing might combine or split sentences differently.
-                let segment = '';
-                if (currentOutputSentenceIndex < cleanedOutputSentences.length) {
-                    segment = cleanedOutputSentences[currentOutputSentenceIndex];
-                    currentOutputSentenceIndex++;
-
-                    // Special handling for the last input line: grab any remaining output sentences
-                    // if Bing has concatenated them into one large string.
-                    if (i === inputLines.length - 1) {
-                         while (currentOutputSentenceIndex < cleanedOutputSentences.length) {
-                            segment += ' ' + cleanedOutputSentences[currentOutputSentenceIndex];
-                            currentOutputSentenceIndex++;
-                        }
-                    }
-                }
-
-                restoredOutput += segment.trim();
-
-                // Add a single newline after non-empty lines, unless it's the very last line
-                // or the next input line is an empty line (which will add a double newline).
-                if (i < inputLines.length - 1 && inputLines[i+1].trim() !== '') {
-                    restoredOutput += '\n';
-                } else if (i < inputLines.length - 1 && inputLines[i+1].trim() === '' && restoredOutput.length > 0 && !restoredOutput.endsWith('\n\n')) {
-                    restoredOutput += '\n';
-                }
-            }
-
-            // Update the output div only if the content has changed to prevent infinite loops.
-            if (outputDiv.innerText !== restoredOutput) {
-                outputDiv.innerText = restoredOutput;
-                triggerOutputEvents(outputDiv); // Trigger events to notify Bing of the programmatic change.
-            }
+        function isSpecial(line) {
+            const trimmed = line.trim();
+            // Basic check for things that shouldn't be translated or split strangely
+            return urlRegexSimple.test(trimmed) || emailRegexSimple.test(trimmed);
         }
 
+        function escapeRegex(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+        }
+        // --- End Helpers ---
+
         /**
-         * Dispatches various DOM events on an element to simulate user input,
-         * which can trigger Bing's internal mechanisms to re-evaluate the output.
+         * Dispatches various DOM events on an element to simulate user input.
          * @param {HTMLElement} element - The element to dispatch events on.
          */
         function triggerOutputEvents(element) {
@@ -239,66 +153,147 @@
             element.dispatchEvent(compositionEndEvent);
         }
 
+        /**
+         * Core logic for processing and restoring line breaks.
+         */
+        function processTranslationLineBreaks() {
+            const inputTextarea = document.querySelector('#tta_input_ta');
+            const outputDiv = document.querySelector('#tta_output_ta');
+
+            if (!inputTextarea || !outputDiv) {
+                setTimeout(processTranslationLineBreaks, 500);
+                return;
+            }
+
+            const currentInputHTML = inputTextarea.innerHTML;
+            const currentOutputText = outputDiv.innerText;
+
+            if (currentInputHTML === lastProcessedInputHTML && currentOutputText === lastProcessedOutputText) {
+                return;
+            }
+
+            lastProcessedInputHTML = currentInputHTML;
+            lastProcessedOutputText = currentOutputText;
+
+            const inputLines = inputTextarea.innerHTML
+                .replace(/<br\s*\/?>/gi, '\n')
+                .split('\n');
+
+            if (inputLines.every(line => line.trim() === '')) {
+                if (outputDiv.innerText !== '') {
+                    outputDiv.innerText = '';
+                    triggerOutputEvents(outputDiv);
+                }
+                return;
+            }
+
+            const specialInputLines = inputLines
+                .map(line => line.trim())
+                .filter(isSpecial);
+
+            let outputSegments = [];
+            const trimmedOutputText = currentOutputText.trim();
+
+            if (specialInputLines.length > 0 && trimmedOutputText.length > 0) {
+                const splitters = specialInputLines.map(escapeRegex);
+                const regex = new RegExp(`(${splitters.join('|')})`, 'g');
+                outputSegments = currentOutputText.split(regex).map(s => s.trim()).filter(s => s.length > 0);
+            } else if (trimmedOutputText.length > 0) {
+                 // Fallback: Try sentence splitting
+                 outputSegments = currentOutputText.match(/[^.!?]+(?:[.!?]+|$)/g) || [currentOutputText];
+                 outputSegments = outputSegments.map(s => s.trim()).filter(s => s.length > 0);
+            }
+
+            // If still empty/failed, use the whole block
+            if(outputSegments.length === 0 && trimmedOutputText.length > 0) {
+                outputSegments = [trimmedOutputText];
+            }
+
+
+            let restoredOutputArray = [];
+            let outputIndex = 0;
+
+            for (let i = 0; i < inputLines.length; i++) {
+                const inputLineTrimmed = inputLines[i].trim();
+
+                if (inputLineTrimmed === '') {
+                    restoredOutputArray.push('');
+                } else {
+                    if (outputIndex < outputSegments.length) {
+                        restoredOutputArray.push(outputSegments[outputIndex]);
+                        outputIndex++;
+                    } else {
+                        console.warn("Input/Output alignment mismatch? Pushing empty.");
+                        restoredOutputArray.push('');
+                    }
+                }
+            }
+            
+             while (outputIndex < outputSegments.length) {
+                 console.warn("Appending extra output segment.");
+                 let foundSpot = false;
+                 for(let k = restoredOutputArray.length - 1; k >= 0; k--) {
+                     if(restoredOutputArray[k] !== '') {
+                        restoredOutputArray[k] += ' ' + outputSegments[outputIndex];
+                        foundSpot = true;
+                        break;
+                     }
+                 }
+                 if(!foundSpot) restoredOutputArray.push(outputSegments[outputIndex]);
+                 outputIndex++;
+             }
+
+            const restoredOutput = restoredOutputArray.join('\n');
+
+            if (outputDiv.innerText !== restoredOutput) {
+                outputDiv.innerText = restoredOutput;
+                triggerOutputEvents(outputDiv);
+            }
+        }
+
+
         // --- Monitoring setup ---
-        // Observe mutations on the input and output areas to trigger line break processing.
         const config = { childList: true, subtree: true, characterData: true, attributes: true };
 
         const inputTextarea = document.querySelector('#tta_input_ta');
         if (inputTextarea) {
-            // Observe changes to the input area's children (e.g., <br> tags being added/removed)
             new MutationObserver(processTranslationLineBreaks).observe(inputTextarea, { childList: true, characterData: true, subtree: true });
-            // Listen for direct input events as well
             inputTextarea.addEventListener('input', () => setTimeout(processTranslationLineBreaks, 50));
         }
 
         const outputDiv = document.querySelector('#tta_output_ta');
         if (outputDiv) {
-            // Observe changes to the output area
             new MutationObserver(processTranslationLineBreaks).observe(outputDiv, config);
         }
 
-        // Set an interval to periodically check and process line breaks,
-        // as some changes might not be caught by MutationObservers.
         setInterval(processTranslationLineBreaks, 750);
     }
 
     /**
      * Overrides Bing's default copy button behavior to copy plain text only.
-     * This ensures consistency with the Alt+Z hotkey.
      */
     function overrideBingCopyButton() {
         if (!window.location.hostname.includes('bing.com')) return;
 
-        /**
-         * Finds the Bing copy button and attaches a custom click handler.
-         * This function is called multiple times to handle dynamic loading/re-rendering.
-         */
         function findAndOverrideCopyButton() {
             const copyButton = document.querySelector('div#tta_copyIcon');
-            // Check if the button exists and hasn't been overridden yet
             if (copyButton && !copyButton.hasAttribute('data-plain-text-override')) {
-                // Mark the button as overridden to prevent re-attaching listeners
                 copyButton.setAttribute('data-plain-text-override', 'true');
-
-                // Clone the button to remove existing event listeners
                 const newCopyButton = copyButton.cloneNode(true);
                 copyButton.parentNode.replaceChild(newCopyButton, copyButton);
 
-                // Add the custom click listener
                 newCopyButton.addEventListener('click', function(event) {
-                    event.preventDefault(); // Prevent Bing's default copy action
-                    event.stopPropagation(); // Stop event propagation
+                    event.preventDefault();
+                    event.stopPropagation();
 
                     const outputTextarea = document.querySelector('#tta_output_ta');
                     if (outputTextarea && outputTextarea.innerText) {
                         copyPlainText(outputTextarea.innerText.trim());
 
-                        // Provide visual feedback to the user
                         const originalTitle = newCopyButton.title;
                         newCopyButton.title = 'Copied!';
                         newCopyButton.style.opacity = '0.6';
 
-                        // Revert visual feedback after a short delay
                         setTimeout(() => {
                             newCopyButton.title = originalTitle;
                             newCopyButton.style.opacity = '';
@@ -308,12 +303,10 @@
             }
         }
 
-        // Call immediately and with delays to catch the button as it loads
         findAndOverrideCopyButton();
         setTimeout(findAndOverrideCopyButton, 1000);
         setTimeout(findAndOverrideCopyButton, 3000);
 
-        // Observe DOM changes to catch if the copy button is re-rendered later
         const observer = new MutationObserver(() => {
             findAndOverrideCopyButton();
         });
@@ -329,193 +322,128 @@
     function setDefaultLanguages() {
         if (!window.location.hostname.includes('bing.com')) return;
 
-        /**
-         * Helper function to select a language from a dropdown.
-         * @param {string} dropdownSelector - CSS selector for the dropdown button.
-         * @param {string} languageText - The exact text of the language option to select.
-         */
         function selectLanguage(dropdownSelector, languageText) {
             const dropdownButton = document.querySelector(dropdownSelector);
             if (dropdownButton) {
-                // Check if the desired language is already selected to avoid unnecessary clicks
                 if (dropdownButton.textContent.trim() === languageText) {
                     return;
                 }
-
-                // Click the dropdown to open the language list
                 clickElement(dropdownButton);
 
-                // Use a MutationObserver to wait for the language list to appear in the DOM.
-                // The language list is often appended to the body or a high-level container.
                 const languageListObserver = new MutationObserver((mutations, observer) => {
                     const languageOption = Array.from(document.querySelectorAll('.tta_menu_item'))
-                                                     .find(item => item.textContent.trim() === languageText);
+                        .find(item => item.textContent.trim() === languageText);
                     if (languageOption) {
-                        clickElement(languageOption); // Click the desired language option
-                        observer.disconnect(); // Stop observing once the option is found and clicked
-
-                        // After selection, ensure the dropdown closes if it doesn't automatically.
+                        clickElement(languageOption);
+                        observer.disconnect();
                         setTimeout(() => {
                             if (dropdownButton.getAttribute('aria-expanded') === 'true') {
-                                clickElement(dropdownButton); // Click again to close if still open
+                                clickElement(dropdownButton);
                             }
                         }, 100);
                     }
                 });
-
-                // Observe the body for the language list.
                 languageListObserver.observe(document.body, { childList: true, subtree: true });
             }
         }
 
-        // Apply default languages: English (detected) for source, French (Canada) for target.
         selectLanguage('#tta_srcsl', 'English (detected)');
         selectLanguage('#tta_tgtlang', 'French (Canada)');
     }
 
     /**
      * Selects a specific tone from the Bing Translate tone dropdown.
-     * @param {string} toneText - The exact text of the tone option to select (e.g., 'Casual', 'Formal', 'Standard').
+     * @param {string} toneText - The exact text of the tone option to select.
      */
     function selectTone(toneText) {
         if (!window.location.hostname.includes('bing.com')) return;
-
         const toneSelectElement = document.querySelector('#tta_tonesl');
-
         if (!toneSelectElement) {
             console.warn('Tone select element (#tta_tonesl) not found. Cannot set tone.');
             return;
         }
-
-        // Check if the desired tone is already selected to avoid unnecessary actions
         if (toneSelectElement.value === toneText) {
-            console.log(`Tone '${toneText}' is already selected.`);
             return;
         }
-
-        // Set the value of the select element
         toneSelectElement.value = toneText;
-
-        // Dispatch a change event to notify Bing's internal JavaScript of the selection change
         const changeEvent = new Event('change', { bubbles: true });
         toneSelectElement.dispatchEvent(changeEvent);
-
         console.log(`Tone set to: ${toneText}`);
     }
 
 
     /**
-     * Applies custom CSS styles to the Bing Translate page to control
-     * font size, textbox dimensions, and overall layout.
+     * Applies custom CSS styles to the Bing Translate page.
      */
     function applyCustomStyles() {
         const style = document.createElement('style');
         style.type = 'text/css';
         style.innerHTML = `
-            /* Hide the header */
-            #theader {
+            #theader, .t_navlinkitem, #b_footerItems {
                 display: none !important;
             }
-
-            /* Hide the header menu (assuming it's a ul within a nav or similar) */
-            /* This targets the specific list items you provided */
-            .t_navlinkitem {
-                display: none !important;
-            }
-
-            /* Hide the footer */
-            #b_footerItems {
-                display: none !important;
-            }
-
-            /* Ensure html and body take full width and height without default margins/padding */
             html, body {
                 width: 100% !important;
                 height: 100% !important;
                 margin: 0 !important;
                 padding: 0 !important;
-                overflow: auto !important; /* Allow scrolling if content overflows */
+                overflow: auto !important;
             }
-
-            /* Target common top-level Bing containers to ensure full width */
-            #app, #b_content, .main, .b_frame, .b_container, .b_translatorContainer, .b_translator {
-                width: 100% !important;
-                max-width: none !important; /* Remove any max-width constraints */
-                margin: 0 !important;
-                padding: 0 !important;
-                box-sizing: border-box;
-            }
-
-            /* Target the specific translator home div and its immediate children */
-            #tt_translatorHome, #tt_txtContrl, #rich_tta {
+            #app, #b_content, .main, .b_frame, .b_container, .b_translatorContainer, .b_translator,
+            #tt_translatorHome, #tt_txtContrl, #rich_tta, table.tta_tbl {
                 width: 100% !important;
                 max-width: none !important;
-                box-sizing: border-box;
                 margin: 0 !important;
                 padding: 0 !important;
+                box-sizing: border-box;
             }
-
-            /* Target the table and its rows/cells directly */
             table.tta_tbl {
-                width: 100% !important;
-                max-width: none !important;
-                table-layout: fixed !important; /* Forces table columns to honor specified widths */
-                border-collapse: collapse !important; /* Remove spacing between cells */
+                table-layout: fixed !important;
+                border-collapse: collapse !important;
             }
-
-            tr.tta_tableRow, table.tta_tbl > tbody > tr { /* Target the row specifically */
+            tr.tta_tableRow, table.tta_tbl > tbody > tr {
                 width: 100% !important;
-                display: table-row !important; /* Ensure it behaves as a table row */
+                display: table-row !important;
             }
-
             td.tta_incell, td.tta_outcell {
-                width: 50% !important; /* Each cell takes half the table width */
-                padding: 5px !important; /* Add some padding around the cells */
+                width: 50% !important;
+                padding: 5px !important;
                 box-sizing: border-box;
-                vertical-align: top !important; /* Align content to the top */
-                min-width: unset !important; /* Ensure no min-width is preventing expansion */
+                vertical-align: top !important;
+                min-width: unset !important;
             }
-
-            /* Apply flexbox to the container holding input and output areas within the cells */
-            /* This is actually the div #tta_in and #tta_out */
             #tta_in, #tta_out {
                 display: flex !important;
-                flex-direction: column !important; /* Stack children vertically */
-                width: 100% !important; /* Take full width of their parent cell */
-                min-height: 65vh !important; /* Ensure this container is tall */
-                height: auto !important; /* Allow height to adjust */
-                align-items: stretch !important; /* Make children fill height */
-                margin: 0 !important; /* Remove margin here, use cell padding */
+                flex-direction: column !important;
+                width: 100% !important;
+                min-height: 65vh !important;
+                height: auto !important;
+                align-items: stretch !important;
+                margin: 0 !important;
                 padding: 0 !important;
                 box-sizing: border-box;
             }
-
-            /* Styles for the actual contenteditable text areas */
             #tta_input_ta, #tta_output_ta {
-                font-size: 24px !important; /* Force font size */
-                min-height: 60vh !important; /* Make text areas very tall, slightly less than parent */
-                height: auto !important; /* Allow height to adjust if content is very long */
-                width: 100% !important; /* Take 100% of their parent's width */
-                box-sizing: border-box; /* Include padding and border in the element's total width and height */
-                padding: 15px !important; /* Add more padding inside the text areas */
-                resize: vertical !important; /* Allow vertical resizing, but not horizontal */
-                overflow-y: auto !important; /* Enable scroll if content overflows */
-                white-space: pre-wrap !important; /* Preserve whitespace and wrap text normally */
-                word-wrap: break-word !important; /* Ensure long words break */
-                min-width: unset !important; /* Ensure no min-width is preventing expansion */
+                font-size: 24px !important;
+                min-height: 60vh !important;
+                height: auto !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                padding: 15px !important;
+                resize: vertical !important;
+                overflow-y: auto !important;
+                white-space: pre-wrap !important;
+                word-wrap: break-word !important;
+                min-width: unset !important;
             }
-
-            /* Adjust the specific input/output box wrappers if needed */
             .tta_inputbox, .tta_outputbox {
-                flex: 1; /* Ensure they fill the available space within their parent (#tta_input / #tta_out) */
+                flex: 1;
                 display: flex;
                 flex-direction: column;
-                min-width: unset !important; /* Ensure no min-width is preventing expansion */
+                min-width: unset !important;
             }
-
-            /* Ensure the swap icon cell doesn't take up too much space */
             td.tta_swapcell {
-                width: auto !important; /* Allow it to shrink to content size */
+                width: auto !important;
                 padding: 5px !important;
                 vertical-align: middle !important;
             }
@@ -524,23 +452,19 @@
     }
 
     // Initialize functions after the page has loaded.
-    // Use DOMContentLoaded for earlier execution if possible, fallback to immediate execution.
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            applyCustomStyles(); // Apply styles as early as possible
-            preserveBingLineBreaks();
-            overrideBingCopyButton();
-            setDefaultLanguages();
-            selectTone('Casual'); // Set default tone to Casual
-        });
-    } else {
-        applyCustomStyles(); // Apply styles immediately if DOM is already loaded
+    function initialize() {
+        applyCustomStyles();
         preserveBingLineBreaks();
         overrideBingCopyButton();
         setDefaultLanguages();
-        selectTone('Casual'); // Set default tone to Casual
+        selectTone('Casual');
+        document.addEventListener('keydown', handleKeydown, false);
     }
 
-    // Attach the global keydown listener for hotkeys.
-    document.addEventListener('keydown', handleKeydown, false);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        initialize();
+    }
+
 })();
