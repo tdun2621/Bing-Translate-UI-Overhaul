@@ -5,7 +5,7 @@
 // @match        https://www.bing.com/translator*
 // @icon         https://images.sftcdn.net/images/t_app-icon-s/p/fcf326e2-9524-11e6-9fb1-00163ec9f5fa/3499352888/bing-translator-windows-10-icon.png
 // @grant        none
-// @version      1.3
+// @version      2.0
 // ==/UserScript==
 
 (function() {
@@ -68,7 +68,7 @@
     function getTranslatedText() {
         const bingResult = document.querySelector('#tta_output_ta');
         if (bingResult) {
-            return bingResult.innerText; // Use innerText for div elements
+            return bingResult.innerText;
         }
         return null;
     }
@@ -81,7 +81,7 @@
     function handleKeydown(event) {
         // Alt + Z for copying translated text as plain text
         if (event.altKey && event.key === 'z') {
-            event.preventDefault(); // Prevent default browser action
+            event.preventDefault();
             const translatedText = getTranslatedText();
             if (translatedText) {
                 copyPlainText(translatedText.trim());
@@ -90,14 +90,14 @@
 
         // Alt + S for swapping languages
         if (event.altKey && event.key === 's') {
-            event.preventDefault(); // Prevent default browser action
+            event.preventDefault();
             const bingSwapButton = document.querySelector('div#tta_revIcon');
             clickElement(bingSwapButton);
         }
 
         // Alt + A for toggling between Casual and Formal tones
         if (event.altKey && event.key === 'a') {
-            event.preventDefault(); // Prevent default browser action
+            event.preventDefault();
 
             const toneSelectElement = document.querySelector('#tta_tonesl');
             if (toneSelectElement) {
@@ -121,22 +121,21 @@
      */
     function preserveBingLineBreaks() {
         if (!window.location.hostname.includes('bing.com')) return;
-
         let lastProcessedInputHTML = '';
         let lastProcessedOutputText = '';
 
-        // --- Helper functions for anchor-based splitting ---
+        // --- Helper functions for anchor-based splitting (isSpecial, escapeRegex) remain the same ---
         const urlRegexSimple = /^(https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?$/;
         const emailRegexSimple = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
         function isSpecial(line) {
             const trimmed = line.trim();
-            // Basic check for things that shouldn't be translated or split strangely
-            return urlRegexSimple.test(trimmed) || emailRegexSimple.test(trimmed);
+            return urlRegexSimple.test(trimmed) ||
+                   emailRegexSimple.test(trimmed);
         }
 
         function escapeRegex(string) {
-            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         }
         // --- End Helpers ---
 
@@ -174,11 +173,9 @@
 
             lastProcessedInputHTML = currentInputHTML;
             lastProcessedOutputText = currentOutputText;
-
             const inputLines = inputTextarea.innerHTML
                 .replace(/<br\s*\/?>/gi, '\n')
                 .split('\n');
-
             if (inputLines.every(line => line.trim() === '')) {
                 if (outputDiv.innerText !== '') {
                     outputDiv.innerText = '';
@@ -187,50 +184,38 @@
                 return;
             }
 
-            const specialInputLines = inputLines
-                .map(line => line.trim())
-                .filter(isSpecial);
-
+            // MODIFIED: Output segmentation logic (from previous step by user)
             let outputSegments = [];
             const trimmedOutputText = currentOutputText.trim();
 
-            if (specialInputLines.length > 0 && trimmedOutputText.length > 0) {
-                const splitters = specialInputLines.map(escapeRegex);
-                const regex = new RegExp(`(${splitters.join('|')})`, 'g');
-                // Split the output text by the special lines.
-                // The map(s => s.trim()) and filter(s => s.length > 0) are crucial.
-                outputSegments = currentOutputText.split(regex).map(s => s.trim()).filter(s => s.length > 0);
-            } else if (trimmedOutputText.length > 0) {
-                 // Fallback: Try sentence splitting if no special lines or they don't match.
-                 // This regex splits by common sentence terminators (. ! ?).
-                outputSegments = currentOutputText.match(/[^.!?]+(?:[.!?]+|$)/g) || [currentOutputText];
+            if (trimmedOutputText.length > 0) {
+                // Primary method for segmenting output: split into sentences.
+                // This regex splits by common sentence terminators (. ! ?).
+                outputSegments = trimmedOutputText.match(/[^.!?]+(?:[.!?]+|$)/g) || [trimmedOutputText];
                 outputSegments = outputSegments.map(s => s.trim()).filter(s => s.length > 0);
             }
 
-            // If still empty/failed (e.g. output is only special lines that got consumed by split, or only whitespace),
-            // use the whole trimmed block if it's not empty.
-            if(outputSegments.length === 0 && trimmedOutputText.length > 0) {
+            // Safety net: If sentence splitting resulted in no segments but there was text,
+            // use the whole trimmed block.
+            // This is unlikely if the regex above has `|| [trimmedOutputText]`.
+            if (outputSegments.length === 0 && trimmedOutputText.length > 0) {
                 outputSegments = [trimmedOutputText];
             }
 
-
             let restoredOutputArray = [];
             let outputIndex = 0;
-
             // Correlate input lines with output segments
             for (let i = 0; i < inputLines.length; i++) {
                 const inputLineTrimmed = inputLines[i].trim();
-
                 if (inputLineTrimmed === '') {
-                    restoredOutputArray.push(''); // Preserve empty input lines
+                    restoredOutputArray.push('');
                 } else {
                     // If there's a corresponding output segment, use it
                     if (outputIndex < outputSegments.length) {
                         restoredOutputArray.push(outputSegments[outputIndex]);
                         outputIndex++;
                     } else {
-                        // If output is shorter than input (e.g., Bing translated multiple input lines into one)
-                        // or if alignment is lost. Push empty string to maintain line count.
+                        // If output is shorter than input
                         console.warn("Input/Output alignment mismatch (fewer output segments than input lines). Pushing empty for input line:", inputLineTrimmed);
                         restoredOutputArray.push('');
                     }
@@ -242,35 +227,39 @@
             while (outputIndex < outputSegments.length) {
                 console.warn("Appending extra output segment to the last non-empty line:", outputSegments[outputIndex]);
                 let foundSpot = false;
-                for(let k = restoredOutputArray.length - 1; k >= 0; k--) {
-                    if(restoredOutputArray[k] !== '') {
-                        // THIS IS THE LINE OF CONCERN for adding superfluous spaces into URLs/emails
-                        // If outputSegments[outputIndex-1] (which became restoredOutputArray[k])
-                        // and outputSegments[outputIndex] are parts of a URL/email,
-                        // the ' ' + might be incorrect.
-                        // Example: restoredOutputArray[k] = "example."
-                        // outputSegments[outputIndex] = "com"
-                        // Result: "example. com"
-                        // A more sophisticated joining logic might be needed here if this is the root cause.
-                        // However, the splitting logic (isSpecial, sentence splitting) should ideally
-                        // prevent URLs/emails from being broken into such `outputSegments`.
-                        // If Bing itself introduces spaces (e.g. "example. com"), the script currently preserves that.
-                        restoredOutputArray[k] += ' ' + outputSegments[outputIndex];
+                for (let k = restoredOutputArray.length - 1; k >= 0; k--) {
+                    if (restoredOutputArray[k] !== '') {
+                        // Careful concatenation from version 1.4
+                        if (restoredOutputArray[k].length > 0 &&
+                            outputSegments[outputIndex].length > 0 &&
+                            !/\s$/.test(restoredOutputArray[k]) &&
+                            !/^\s/.test(outputSegments[outputIndex])) {
+                            restoredOutputArray[k] += ' ';
+                        }
+                        restoredOutputArray[k] += outputSegments[outputIndex];
                         foundSpot = true;
                         break;
                     }
                 }
                 // If all previous lines were empty, just push the segment as a new line.
-                if(!foundSpot) {
+                if (!foundSpot) {
                     restoredOutputArray.push(outputSegments[outputIndex]);
                 }
                 outputIndex++;
             }
 
-            const restoredOutput = restoredOutputArray.join('\n');
+            let restoredOutput = restoredOutputArray.join('\n');
 
-            if (outputDiv.innerText !== restoredOutput) {
-                outputDiv.innerText = restoredOutput;
+            // Post-processing for email addresses (from version 1.4)
+            let finalOutputLines = restoredOutput.split('\n');
+            for (let i = 0; i < finalOutputLines.length; i++) {
+                if (finalOutputLines[i].includes('@')) {
+                    finalOutputLines[i] = finalOutputLines[i].replace(/\.\s+/g, '.');
+                }
+            }
+            const processedOutput = finalOutputLines.join('\n');
+            if (outputDiv.innerText !== processedOutput) {
+                outputDiv.innerText = processedOutput;
                 triggerOutputEvents(outputDiv); // Notify Bing of the change
             }
         }
@@ -278,13 +267,13 @@
 
         // --- Monitoring setup ---
         // Observe changes in both input and output areas to reprocess line breaks.
-        const config = { childList: true, subtree: true, characterData: true, attributes: true }; // Observe everything
+        const config = { childList: true, subtree: true, characterData: true, attributes: true };
 
         const inputTextarea = document.querySelector('#tta_input_ta');
         if (inputTextarea) {
             new MutationObserver(processTranslationLineBreaks).observe(inputTextarea, { childList: true, characterData: true, subtree: true });
             // Also trigger on direct input events for faster response.
-            inputTextarea.addEventListener('input', () => setTimeout(processTranslationLineBreaks, 50)); // Debounce slightly
+            inputTextarea.addEventListener('input', () => setTimeout(processTranslationLineBreaks, 50));
         }
 
         const outputDiv = document.querySelector('#tta_output_ta');
@@ -297,55 +286,76 @@
         setInterval(processTranslationLineBreaks, 750);
     }
 
+    let fixedCopyButtonInitialized = false;
+
     /**
-     * Overrides Bing's default copy button behavior to copy plain text only.
+     * Overrides Bing's default copy button behavior to copy plain text only
+     * and positions it in the new custom top bar.
      */
     function overrideBingCopyButton() {
         if (!window.location.hostname.includes('bing.com')) return;
+        if (fixedCopyButtonInitialized) return; // Ensure it only runs once
 
-        function findAndOverrideCopyButton() {
-            const copyButton = document.querySelector('div#tta_copyIcon');
-            if (copyButton && !copyButton.hasAttribute('data-plain-text-override')) {
-                copyButton.setAttribute('data-plain-text-override', 'true'); // Mark as overridden
-                // Clone and replace to remove existing event listeners
-                const newCopyButton = copyButton.cloneNode(true);
-                copyButton.parentNode.replaceChild(newCopyButton, copyButton);
-
-                newCopyButton.addEventListener('click', function(event) {
-                    event.preventDefault(); // Stop Bing's original copy action
-                    event.stopPropagation(); // Stop event from bubbling further
-
-                    const outputTextarea = document.querySelector('#tta_output_ta'); // Bing's output area
-                    if (outputTextarea && outputTextarea.innerText) {
-                        copyPlainText(outputTextarea.innerText.trim()); // Copy plain text
-
-                        // Visual feedback
-                        const originalTitle = newCopyButton.title;
-                        newCopyButton.title = 'Copied!';
-                        newCopyButton.style.opacity = '0.6'; // Dim to indicate action
-
-                        setTimeout(() => { // Reset after a short delay
-                            newCopyButton.title = originalTitle;
-                            newCopyButton.style.opacity = '';
-                        }, 1000);
-                    }
-                });
+        const originalCopyButton = document.querySelector('div#tta_copyIcon');
+        let svgHtml = '';
+        if (originalCopyButton) {
+            svgHtml = originalCopyButton.innerHTML; // Get the SVG content
+            originalCopyButton.style.display = 'none'; // Hide the original button
+            // Also hide its parent cell if it's still taking space
+            const parentCell = originalCopyButton.closest('td.tta_swapcell');
+            if (parentCell) {
+                parentCell.style.display = 'none';
             }
         }
 
-        // Try to find the button at different stages of page load
-        findAndOverrideCopyButton();
-        setTimeout(findAndOverrideCopyButton, 1000); // After 1 sec
-        setTimeout(findAndOverrideCopyButton, 3000); // After 3 sec
+        let fixedCopyButton = document.getElementById('fixed_tta_copyIcon');
+        if (!fixedCopyButton) {
+            const customTopBar = document.getElementById('custom_top_bar');
+            if (!customTopBar) {
+                console.error('Custom top bar not found to place copy button.');
+                return; // Exit if top bar isn't ready
+            }
+            fixedCopyButton = document.createElement('div');
+            fixedCopyButton.id = 'fixed_tta_copyIcon'; // A new ID for the fixed button
+            fixedCopyButton.innerHTML = svgHtml; // Populate with original SVG
+            fixedCopyButton.title = 'Copy'; // Set initial title
+            fixedCopyButton.setAttribute('data-plain-text-override', 'true');
+            customTopBar.appendChild(fixedCopyButton); // Append to the custom top bar
 
-        // Observe for dynamic changes (e.g., if Bing re-renders the button)
+            fixedCopyButton.addEventListener('click', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const outputTextarea = document.querySelector('#tta_output_ta');
+
+                if (outputTextarea && outputTextarea.innerText) {
+                    copyPlainText(outputTextarea.innerText.trim());
+
+                    const originalTitle = fixedCopyButton.title;
+                    fixedCopyButton.title = 'Copied!';
+                    fixedCopyButton.style.opacity = '0.6';
+
+                    setTimeout(() => {
+                        fixedCopyButton.title = originalTitle;
+                        fixedCopyButton.style.opacity = '';
+                    }, 1000);
+                }
+            });
+            fixedCopyButtonInitialized = true;
+        }
+
+        // Observer to ensure the original button remains hidden if it reappears
         const observer = new MutationObserver(() => {
-            findAndOverrideCopyButton();
+            const currentOriginalCopyButton = document.querySelector('div#tta_copyIcon');
+            if (currentOriginalCopyButton && currentOriginalCopyButton.id !== 'fixed_tta_copyIcon' && currentOriginalCopyButton.style.display !== 'none') {
+                 currentOriginalCopyButton.style.display = 'none'; // Ensure original is hidden
+                 const parentCell = currentOriginalCopyButton.closest('td.tta_swapcell');
+                 if (parentCell) {
+                    parentCell.style.display = 'none';
+                 }
+            }
         });
-        observer.observe(document.body, {
-            childList: true, // Watch for direct children changes in body
-            subtree: true   // Watch for changes in all descendants of body
-        });
+        observer.observe(document.body, { childList: true, subtree: true });
     }
 
     /**
@@ -353,7 +363,6 @@
      */
     function setDefaultLanguages() {
         if (!window.location.hostname.includes('bing.com')) return;
-
         function selectLanguage(dropdownSelector, languageText) {
             const dropdownButton = document.querySelector(dropdownSelector);
             if (dropdownButton) {
@@ -367,6 +376,7 @@
                 const languageListObserver = new MutationObserver((mutations, observer) => {
                     const languageOption = Array.from(document.querySelectorAll('.tta_menu_item'))
                         .find(item => item.textContent.trim() === languageText);
+
                     if (languageOption) {
                         clickElement(languageOption); // Select the language
                         observer.disconnect(); // Stop observing
@@ -385,7 +395,7 @@
 
         // Set default languages
         selectLanguage('#tta_srcsl', 'English (detected)'); // Source: English (auto-detected)
-        selectLanguage('#tta_tgtlang', 'French (Canada)');   // Target: French (Canada)
+        selectLanguage('#tta_tgtsl', 'French (Canada)'); // Target: French (Canada)
     }
 
     /**
@@ -396,7 +406,7 @@
         if (!window.location.hostname.includes('bing.com')) return;
         const toneSelectElement = document.querySelector('#tta_tonesl');
         if (!toneSelectElement) {
-            console.warn('Tone select element (#tta_tonesl) not found. Cannot set tone.');
+            console.warn('Tone select element (#tta_tonesl) not found.');
             return;
         }
         // Only change if not already selected
@@ -418,82 +428,150 @@
         const style = document.createElement('style');
         style.type = 'text/css';
         style.innerHTML = `
-            /* Hide header, nav links, and footer for a cleaner interface */
-            #theader, .t_navlinkitem, #b_footerItems {
+            /* Hide Bing's default header, specific navigation bar, footer, and phrasebook for a cleaner interface */
+            #theader, nav, .t_navlinkitem, #b_footerItems, #tta_phrasebook {
                 display: none !important;
             }
-            /* Ensure full width and height usage */
+
+            /* Global layout for full screen and proper flex stacking */
             html, body {
                 width: 100% !important;
                 height: 100% !important;
                 margin: 0 !important;
                 padding: 0 !important;
-                overflow: auto !important; /* Allow scrolling if content overflows */
+                overflow: hidden !important; /* Control overall scrolling and prevent unwanted scrollbars */
+                display: flex !important; /* Make body a flex container */
+                flex-direction: column !important; /* Stack custom top bar and main content vertically */
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
-            /* Make all containers and translation areas take full width */
-            #app, #b_content, .main, .b_frame, .b_container, .b_translatorContainer, .b_translator,
-            #tt_translatorHome, #tt_txtContrl, #rich_tta, table.tta_tbl {
+
+            /* Custom Top Bar for elements like the copy button */
+            #custom_top_bar {
                 width: 100% !important;
-                max-width: none !important; /* Override any max-width restrictions */
+                height: 50px !important; /* Define height for the bar */
+                background-color: #f0f0f0 !important; /* Light grey background */
+                display: flex !important;
+                align-items: center !important; /* Vertically center content */
+                justify-content: center !important; /* Center the copy button horizontally */
+                padding: 0 15px !important; /* Some horizontal padding */
+                box-sizing: border-box;
+                flex-shrink: 0 !important; /* Prevent it from shrinking */
+                min-width: 0 !important; /* Ensure it can shrink horizontally */
+            }
+
+            /* Main content area (Bing Translator UI) takes remaining vertical space */
+            #app, #b_content, .main, .b_frame, .b_container, .b_translatorContainer, .b_translator,
+            #tt_translatorHome, #tt_txtContrl, #rich_tta {
+                flex: 1 !important; /* Allow these to grow and take remaining vertical space */
+                width: 100% !important;
+                max-width: none !important; /* Remove any max-width restrictions */
                 margin: 0 !important;
                 padding: 0 !important;
-                box-sizing: border-box; /* Include padding and border in the element's total width and height */
+                box-sizing: border-box;
+                display: flex !important; /* Make them flex containers for their children */
+                flex-direction: column !important; /* Stack children vertically */
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
-            /* Ensure table layout is fixed and cells are equally distributed */
+
+            /* The translation table and its internal structure for full dynamic resizing */
             table.tta_tbl {
-                table-layout: fixed !important;
+                flex: 1 !important; /* Takes remaining space in column layout */
+                height: auto !important; /* Let flex control height, not fixed 100% */
+                width: 100% !important; /* Ensure full horizontal space */
+                table-layout: fixed !important; /* Distribute columns evenly */
                 border-collapse: collapse !important;
+                margin: 0 !important;
+                min-width: 0 !important; /* Ensure it can shrink horizontally */
+                display: flex !important; /* Make table a flex container */
+                flex-direction: column !important; /* Stack tbody vertically */
+            }
+            table.tta_tbl > tbody {
+                flex: 1 !important; /* Take remaining space in flex column layout */
+                display: flex !important; /* Make tbody a flex container */
+                flex-direction: column !important; /* Stack tr vertically */
             }
             tr.tta_tableRow, table.tta_tbl > tbody > tr {
                 width: 100% !important;
-                display: table-row !important; /* Ensure proper table row behavior */
+                height: 100% !important; /* Rows should fill table height */
+                display: flex !important; /* Make tr a flex container */
+                flex: 1 !important; /* Allows cells to stretch in height */
             }
-            /* Input and output cells should each take 50% width */
+
+            /* Input and output cells should each take 50% width and full height */
             td.tta_incell, td.tta_outcell {
-                width: 50% !important;
-                padding: 5px !important; /* Add some padding inside cells */
+                flex: 1 !important; /* Take equal remaining horizontal space */
+                height: 100% !important; /* Take full height of parent row */
+                padding: 5px !important;
                 box-sizing: border-box;
-                vertical-align: top !important; /* Align content to the top */
-                min-width: unset !important; /* Remove any min-width that might shrink cells */
+                vertical-align: top !important;
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
+
             /* Flexbox for input/output containers to manage height */
             #tta_in, #tta_out {
                 display: flex !important;
                 flex-direction: column !important;
                 width: 100% !important;
-                min-height: 65vh !important; /* Ensure a minimum height */
-                height: auto !important; /* Allow height to grow with content */
+                height: 100% !important; /* Take full height of parent cell */
+                min-height: unset !important; /* Remove fixed minimum height that might prevent full dynamic resize */
                 align-items: stretch !important; /* Stretch children to fill width */
                 margin: 0 !important;
                 padding: 0 !important;
                 box-sizing: border-box;
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
-            /* Style for the actual text areas (input and output) */
+
+            /* Text areas (input and output) to fill available space dynamically */
             #tta_input_ta, #tta_output_ta {
-                font-size: 24px !important; /* Larger font size for readability */
-                min-height: 60vh !important; /* Minimum height for text areas */
-                height: auto !important; /* Grow with content */
-                width: 100% !important; /* Full width */
+                font-size: 24px !important;
+                flex: 1 !important; /* Allow them to grow and shrink dynamically */
+                height: 100% !important; /* Take full height within their flex parent */
+                width: 100% !important;
                 box-sizing: border-box !important;
-                padding: 15px !important; /* Generous padding */
-                resize: vertical !important; /* Allow vertical resizing by user */
-                overflow-y: auto !important; /* Add scrollbar if content overflows */
+                padding: 15px !important;
+                resize: none !important; /* Prevent manual resizing by user */
+                overflow-y: auto !important; /* Add scrollbar if content overflows vertically */
                 white-space: pre-wrap !important; /* Preserve line breaks and spaces */
                 word-wrap: break-word !important; /* Break long words to prevent horizontal scroll */
-                min-width: unset !important;
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
             /* Ensure the parent boxes of textareas also flex correctly */
             .tta_inputbox, .tta_outputbox {
-                flex: 1; /* Allow them to grow and shrink */
+                flex: 1;
                 display: flex;
                 flex-direction: column;
-                min-width: unset !important;
+                min-width: 0 !important; /* Ensure they can shrink horizontally */
             }
-            /* Adjust swap button cell width and alignment */
+
+            /* Hide the original swap button's cell */
             td.tta_swapcell {
-                width: auto !important; /* Don't force 50% width */
-                padding: 5px !important;
-                vertical-align: middle !important; /* Center swap button vertically */
+                display: none !important;
+            }
+
+            /* Styling for the new custom copy button (now inside custom_top_bar) */
+            #fixed_tta_copyIcon {
+                position: relative !important; /* Positioned within its flex parent (custom_top_bar) */
+                top: unset !important; /* Remove fixed positioning */
+                left: unset !important;
+                background-color: #dcdcdc !important; /* Light grey */
+                width: 48px !important; /* Adjusted size for top bar */
+                height: 48px !important;
+                padding: 8px !important;
+                border-radius: 4px !important; /* Slightly smaller border-radius for cleaner look */
+                transition: background-color 0.2s ease !important;
+                flex-shrink: 0 !important; /* Don't let it shrink */
+                display: flex !important; /* Make it a flex container to center SVG */
+                align-items: center !important;
+                justify-content: center !important;
+                cursor: pointer !important;
+            }
+            #fixed_tta_copyIcon:hover {
+                background-color: #cccccc !important; /* Slightly darker on hover */
+            }
+            #fixed_tta_copyIcon svg {
+                width: 32px !important; /* Adjusted icon size to fit the smaller button */
+                height: 32px !important;
+                fill: rgb(105, 151, 224) !important; /* New blue color for the icon */
             }
         `;
         document.head.appendChild(style);
@@ -501,9 +579,14 @@
 
     // Initialize functions after the page has loaded.
     function initialize() {
-        applyCustomStyles();
-        preserveBingLineBreaks(); // This function contains the logic in question
-        overrideBingCopyButton();
+        // 1. Create and prepend the custom top bar element
+        const customTopBar = document.createElement('div');
+        customTopBar.id = 'custom_top_bar';
+        document.body.prepend(customTopBar); // Add it at the very top of the body
+
+        applyCustomStyles(); // Apply styles after custom elements are created
+        preserveBingLineBreaks();
+        overrideBingCopyButton(); // This will now append to customTopBar
         setDefaultLanguages();
         selectTone('Casual'); // Default tone
         document.addEventListener('keydown', handleKeydown, false);
